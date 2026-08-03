@@ -15,6 +15,7 @@ from itertools import product
 from pathlib import Path
 
 import pandas as pd
+import numpy as np
 
 import config
 from trend_down_stocks import (
@@ -35,9 +36,9 @@ FORTUNE500_TICKERS_FILE = (
 FORTUNE500_COMPARE_FILE = STOOQ_SAVE_DIR / "trend_down_fortune500_compare.csv"
 
 # Parameter grid (edit here to experiment).
-TREND_DOWN_THRESH_VALUES = [0.05, 0.10, 0.15, 0.20]  # 5% … 20%
-REBOUND_SHORT_TERM_PER_THRESH_VALUES = [0.03, 0.05]
-WAIT_FOR_SHORT_TERM_REBOUND_VALUES = [True, False]
+TREND_DOWN_THRESH_VALUES = np.arange(0.01, 0.20, 0.01)
+REBOUND_SHORT_TERM_PER_THRESH_VALUES = [0.03]
+WAIT_FOR_SHORT_TERM_REBOUND_VALUES = [False]
 
 STATS_SINCE = "2010-01-01"
 
@@ -171,7 +172,7 @@ def load_fortune500_tickers(
 
 
 def compare_fortune500_vs_rest(
-    trend_down_thresh: float = 0.15,
+    trend_down_thresh: float = 0.10,
     wait_for_short_term_rebound: bool = False,
 ) -> pd.DataFrame:
     """
@@ -251,7 +252,7 @@ def iter_param_grid():
             yield thresh, wait, None
 
 
-def main() -> None:
+def trend_down_param_sweep() -> None:
     print("=" * 72)
     print("Trend-down parameter sweep")
     print("=" * 72)
@@ -309,4 +310,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    compare_fortune500_vs_rest()
+
