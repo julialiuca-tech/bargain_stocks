@@ -32,7 +32,7 @@ future_change = 93
 
 # If True, only keep flags that rebound by rebound_short_term_per_thresh
 # by the end of rebound_short_term_days (and rewrite date/price to that window).
-WAIT_FOR_SHORT_TERM_REBOUND = True
+WAIT_FOR_SHORT_TERM_REBOUND = False
 
 # Short-term rebound filter: keep a flag only if the close at the end of
 # this many calendar days after the flag date is up by at least

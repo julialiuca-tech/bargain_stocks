@@ -17,13 +17,17 @@ Pipeline:
   5. Attach the price future_change days ahead (when available).
 
 Usage:
-  python trend_down_stocks.py
+  python trend_down_stocks.py              # full sieve
+  python trend_down_stocks.py --debug      # plot INTU flags
+  python trend_down_stocks.py --debug AAPL # plot another ticker
 """
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 
 import config
@@ -326,6 +330,99 @@ def attach_future_prices(
 
 
 # =============================================================================
+# DEBUG / VISUALIZATION
+# =============================================================================
+
+DEFAULT_DEBUG_TICKER = "INTU"
+
+
+def debug_trend_down(ticker: str = DEFAULT_DEBUG_TICKER) -> None:
+    """
+    Step-by-step debug for one ticker:
+      1. load_daily_prices → find_trending_down_stocks → suppress_similar_tuples
+      2. plot close price with flagged trend-down points marked
+    """
+    ticker = ticker.upper()
+    plot_file = STOOQ_SAVE_DIR / f"debug_trend_down_{ticker}.png"
+
+    print("=" * 72)
+    print(f"Debug trend_down_stocks — {ticker}")
+    print("=" * 72)
+    print(f"  trend_down_thresh           = {config.trend_down_thresh}")
+    print(f"  trend_down_history          = {config.trend_down_history}d")
+    print(f"  trending_down_suppression   = {config.trending_down_suppression}d")
+    print("=" * 72)
+
+    daily_df = load_daily_prices()
+    ticker_df = daily_df[daily_df["ticker"] == ticker].copy()
+    if ticker_df.empty:
+        raise RuntimeError(
+            f"No daily prices found for {ticker}. "
+            "Check data/stock_Stooq_daily_US/."
+        )
+    print(
+        f"{ticker}: {len(ticker_df):,} daily rows "
+        f"({ticker_df['date'].min().date()} → {ticker_df['date'].max().date()})"
+    )
+
+    trending_down_stocks = find_trending_down_stocks(ticker_df)
+    trending_down_stocks = suppress_similar_tuples(trending_down_stocks)
+
+    events = pd.DataFrame(
+        trending_down_stocks,
+        columns=["ticker", "date", "price", "historical_average"],
+    )
+    print(f"\n{ticker} trend-down events after suppression: {len(events)}")
+    if not events.empty:
+        print(events.to_string(index=False))
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.plot(
+        ticker_df["date"],
+        ticker_df["close_price"],
+        color="#1f4e79",
+        linewidth=1.0,
+        label=f"{ticker} close",
+    )
+
+    if not events.empty:
+        ax.scatter(
+            events["date"],
+            events["price"],
+            color="#c0392b",
+            s=40,
+            zorder=3,
+            label="trend-down flag",
+        )
+        for row in events.itertuples(index=False):
+            ax.annotate(
+                row.date.strftime("%Y-%m-%d"),
+                (row.date, row.price),
+                textcoords="offset points",
+                xytext=(5, 8),
+                fontsize=7,
+                color="#c0392b",
+            )
+
+    ax.set_title(
+        f"{ticker}: trend-down flags "
+        f"(thresh={config.trend_down_thresh}, "
+        f"history={config.trend_down_history}d, "
+        f"suppress={config.trending_down_suppression}d)"
+    )
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Close price")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    STOOQ_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    fig.savefig(plot_file, dpi=150)
+    print(f"\nSaved plot to {plot_file}")
+    plt.show()
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -378,4 +475,16 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Trend-down stock sieve")
+    parser.add_argument(
+        "--debug",
+        nargs="?",
+        const=DEFAULT_DEBUG_TICKER,
+        metavar="TICKER",
+        help=f"Debug/plot one ticker (default: {DEFAULT_DEBUG_TICKER})",
+    )
+    args = parser.parse_args()
+    if args.debug is not None:
+        debug_trend_down(args.debug)
+    else:
+        main()
