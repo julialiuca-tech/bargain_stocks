@@ -18,6 +18,8 @@ Pipeline:
 
 Usage:
   python trend_down_stocks.py              # full sieve
+  python trend_down_stocks.py --today      # S&P 500 (PIT) bargains on latest day
+  python trend_down_stocks.py --today 2026-07-22  # same, for a specific date
   python trend_down_stocks.py --debug      # plot INTU flags
   python trend_down_stocks.py --debug AAPL # plot another ticker
 """
@@ -39,6 +41,7 @@ from utilities.stock_stooq import (
 )
 
 OUTPUT_FILE = STOOQ_SAVE_DIR / "trending_down_stocks.csv"
+OUTPUT_FILE_DEBUG = STOOQ_SAVE_DIR / "debug_trending_down_stocks.csv"
 
 _EVENT_COLUMNS = ["ticker", "date", "price", "historical_average"]
 
@@ -330,6 +333,149 @@ def attach_future_prices(
 
 
 # =============================================================================
+# CURRENT-DAY BARGAINS
+# =============================================================================
+
+def current_day_bargains(
+    daily_df: pd.DataFrame | None = None,
+    as_of: str | pd.Timestamp | None = None,
+    sp500_only: bool = True,
+) -> pd.DataFrame:
+    """
+    Run the trend-down sieve and return bargains flagged on `as_of`.
+
+    If `as_of` is None, uses the latest trading day present in `daily_df`.
+    Applies the same optional short-term rebound filter and suppression as main().
+    By default (`sp500_only=True`), keeps only tickers in the S&P 500 on `as_of`
+    (point-in-time membership from data/sp500/).
+
+    Columns: ticker, date, price, historical_average, discount
+    (discount = 1 - price / historical_average).
+    """
+    # Lazy import avoids a circular dependency with experiment_trend_down_params.
+    from experiment_trend_down_params import (
+        ever_sp500_tickers,
+        filter_events_in_sp500,
+        load_sp500_membership_intervals,
+    )
+
+    if daily_df is None:
+        daily_df = load_daily_prices()
+    else:
+        daily_df = daily_df.copy()
+
+    daily_df["date"] = pd.to_datetime(daily_df["date"])
+    data_end = daily_df["date"].max()
+    as_of_ts = pd.Timestamp(as_of) if as_of is not None else data_end
+    as_of_ts = as_of_ts.normalize()
+
+    if as_of_ts > data_end:
+        raise ValueError(
+            f"as_of {as_of_ts.date()} is after the latest price date "
+            f"{data_end.date()}. Refresh Stooq data or pick an earlier date."
+        )
+
+    # Avoid look-ahead: only use prices on/before the evaluation day.
+    daily_df = daily_df[daily_df["date"] <= as_of_ts].copy()
+    empty = pd.DataFrame(columns=[*_EVENT_COLUMNS, "discount"])
+    if daily_df.empty:
+        return empty
+
+    membership = None
+    if sp500_only:
+        membership = load_sp500_membership_intervals()
+        ever = ever_sp500_tickers(
+            membership, price_tickers=set(daily_df["ticker"].unique())
+        )
+        daily_df = daily_df[daily_df["ticker"].isin(ever)].copy()
+        if daily_df.empty:
+            return empty
+
+    trending_down_stocks = find_trending_down_stocks(daily_df)
+    if config.WAIT_FOR_SHORT_TERM_REBOUND:
+        trending_down_stocks = filter_short_term_rebounds(
+            trending_down_stocks, daily_df
+        )
+    trending_down_stocks = suppress_similar_tuples(trending_down_stocks)
+
+    if not trending_down_stocks:
+        return empty
+
+    events = pd.DataFrame(trending_down_stocks, columns=_EVENT_COLUMNS)
+    events["date"] = pd.to_datetime(events["date"])
+    today = events[events["date"] == as_of_ts].copy()
+    if today.empty:
+        trading_days = daily_df["date"].drop_duplicates().sort_values()
+        if as_of_ts not in set(trading_days):
+            nearest = trading_days[trading_days <= as_of_ts]
+            hint = (
+                f" (nearest prior trading day in data: {nearest.iloc[-1].date()})"
+                if len(nearest)
+                else ""
+            )
+            print(f"Note: {as_of_ts.date()} is not a trading day in the price data{hint}.")
+        return empty
+
+    if sp500_only:
+        n_before = len(today)
+        today = filter_events_in_sp500(today, membership=membership)
+        print(
+            f"S&P 500 (point-in-time) filter on {as_of_ts.date()}: "
+            f"kept {len(today):,} / {n_before:,}"
+        )
+        if today.empty:
+            return empty
+
+    today["discount"] = 1.0 - today["price"] / today["historical_average"]
+    return today.sort_values(["discount", "ticker"], ascending=[False, True]).reset_index(
+        drop=True
+    )
+
+
+def print_current_bargains(
+    as_of: str | pd.Timestamp | None = None,
+    sp500_only: bool = True,
+) -> pd.DataFrame:
+    """Load prices, find bargains on the current (or given) day, and print them."""
+    universe = "S&P 500 (point-in-time)" if sp500_only else "all tickers"
+    print("=" * 72)
+    print(f"Current-day trend-down bargains — {universe}")
+    print("=" * 72)
+    print(f"  trend_down_thresh                = {config.trend_down_thresh}")
+    print(f"  trend_down_history               = {config.trend_down_history}d")
+    print(f"  WAIT_FOR_SHORT_TERM_REBOUND      = {config.WAIT_FOR_SHORT_TERM_REBOUND}")
+    print(f"  rebound_short_term_days          = {config.rebound_short_term_days}")
+    print(f"  rebound_short_term_per_thresh    = {config.rebound_short_term_per_thresh}")
+    print(f"  trending_down_suppression        = {config.trending_down_suppression}d")
+    print(f"  sp500_only                       = {sp500_only}")
+    print("=" * 72)
+
+    daily_df = load_daily_prices()
+    data_end = pd.to_datetime(daily_df["date"]).max()
+    as_of_ts = pd.Timestamp(as_of) if as_of is not None else data_end
+    print(f"Evaluating bargains for: {as_of_ts.date()}")
+    print(f"Price data through:      {data_end.date()}")
+
+    bargains = current_day_bargains(
+        daily_df=daily_df, as_of=as_of_ts, sp500_only=sp500_only
+    )
+    print(f"\nBargains on {as_of_ts.date()}: {len(bargains):,}")
+    if bargains.empty:
+        print("None.")
+    else:
+        display = bargains.copy()
+        display["date"] = display["date"].dt.strftime("%Y-%m-%d")
+        display["price"] = display["price"].map(lambda x: f"{x:.4f}")
+        display["historical_average"] = display["historical_average"].map(
+            lambda x: f"{x:.4f}"
+        )
+        display["discount"] = display["discount"].map(lambda x: f"{x:.1%}")
+        print(display.to_string(index=False))
+    print("=" * 72)
+    return bargains
+
+
+# =============================================================================
 # DEBUG / VISUALIZATION
 # =============================================================================
 
@@ -340,7 +486,8 @@ def debug_trend_down(ticker: str = DEFAULT_DEBUG_TICKER) -> None:
     """
     Step-by-step debug for one ticker:
       1. load_daily_prices → find_trending_down_stocks → suppress_similar_tuples
-      2. plot close price with flagged trend-down points marked
+      2. attach_future_prices → write CSV to OUTPUT_FILE_DEBUG
+      3. plot close price with flagged trend-down points marked
     """
     ticker = ticker.upper()
     plot_file = STOOQ_SAVE_DIR / f"debug_trend_down_{ticker}.png"
@@ -351,6 +498,7 @@ def debug_trend_down(ticker: str = DEFAULT_DEBUG_TICKER) -> None:
     print(f"  trend_down_thresh           = {config.trend_down_thresh}")
     print(f"  trend_down_history          = {config.trend_down_history}d")
     print(f"  trending_down_suppression   = {config.trending_down_suppression}d")
+    print(f"  future_change               = {config.future_change}d")
     print("=" * 72)
 
     daily_df = load_daily_prices()
@@ -368,13 +516,14 @@ def debug_trend_down(ticker: str = DEFAULT_DEBUG_TICKER) -> None:
     trending_down_stocks = find_trending_down_stocks(ticker_df)
     trending_down_stocks = suppress_similar_tuples(trending_down_stocks)
 
-    events = pd.DataFrame(
-        trending_down_stocks,
-        columns=["ticker", "date", "price", "historical_average"],
-    )
+    events = attach_future_prices(trending_down_stocks, ticker_df)
     print(f"\n{ticker} trend-down events after suppression: {len(events)}")
     if not events.empty:
         print(events.to_string(index=False))
+
+    STOOQ_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    events.to_csv(OUTPUT_FILE_DEBUG, index=False)
+    print(f"Saved {len(events):,} rows to {OUTPUT_FILE_DEBUG}")
 
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(
@@ -416,7 +565,6 @@ def debug_trend_down(ticker: str = DEFAULT_DEBUG_TICKER) -> None:
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    STOOQ_SAVE_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(plot_file, dpi=150)
     print(f"\nSaved plot to {plot_file}")
     plt.show()
@@ -483,8 +631,28 @@ if __name__ == "__main__":
         metavar="TICKER",
         help=f"Debug/plot one ticker (default: {DEFAULT_DEBUG_TICKER})",
     )
+    parser.add_argument(
+        "--today",
+        nargs="?",
+        const="LATEST",
+        metavar="YYYY-MM-DD",
+        help=(
+            "Print S&P 500 (point-in-time) bargains for the latest trading day "
+            "in the data (or for YYYY-MM-DD if given)"
+        ),
+    )
+    parser.add_argument(
+        "--all-tickers",
+        action="store_true",
+        help="With --today, include all tickers (skip S&P 500 filter)",
+    )
     args = parser.parse_args()
     if args.debug is not None:
         debug_trend_down(args.debug)
+    elif args.today is not None:
+        print_current_bargains(
+            None if args.today == "LATEST" else args.today,
+            sp500_only=not args.all_tickers,
+        )
     else:
         main()
