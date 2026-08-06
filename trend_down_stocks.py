@@ -18,8 +18,9 @@ Pipeline:
 
 Usage:
   python trend_down_stocks.py              # full sieve
-  python trend_down_stocks.py --today      # S&P 500 (PIT) bargains on latest day
-  python trend_down_stocks.py --today 2026-07-22  # same, for a specific date
+  python trend_down_stocks.py --today              # S&P 500 (PIT) bargains on latest day
+  python trend_down_stocks.py --today --days 7     # same, past calendar week through latest day
+  python trend_down_stocks.py --today 2026-07-22 --days 7  # week ending on that date
   python trend_down_stocks.py --debug      # plot INTU flags
   python trend_down_stocks.py --debug AAPL # plot another ticker
 """
@@ -42,6 +43,7 @@ from utilities.stock_stooq import (
 
 OUTPUT_FILE = STOOQ_SAVE_DIR / "trending_down_stocks.csv"
 OUTPUT_FILE_DEBUG = STOOQ_SAVE_DIR / "debug_trending_down_stocks.csv"
+OUTPUT_FILE_CURRENT = STOOQ_SAVE_DIR / "current_bargains.csv"
 
 _EVENT_COLUMNS = ["ticker", "date", "price", "historical_average"]
 
@@ -51,7 +53,7 @@ _EVENT_COLUMNS = ["ticker", "date", "price", "historical_average"]
 # =============================================================================
 
 def load_daily_prices(base_dir: Path = STOOQ_BASE_DIR) -> pd.DataFrame:
-    """Daily closes for all stocks under base_dir (ticker, date, close_price)."""
+    """Daily OHLC subset for all stocks under base_dir (ticker, date, close_price, open_price)."""
     print(f"Loading daily prices from {base_dir} ...")
     if not base_dir.is_dir():
         raise FileNotFoundError(
@@ -70,8 +72,11 @@ def load_daily_prices(base_dir: Path = STOOQ_BASE_DIR) -> pd.DataFrame:
 
     daily = pd.concat(frames, ignore_index=True)
     daily["ticker"] = daily["ticker"].str.upper().str.replace(".US", "", regex=False)
+    cols = ["ticker", "date", "close_price"]
+    if "open_price" in daily.columns:
+        cols.append("open_price")
     daily = (
-        daily[["ticker", "date", "close_price"]]
+        daily[cols]
         .dropna(subset=["date", "close_price"])
         .sort_values(["ticker", "date"])
         .drop_duplicates(subset=["ticker", "date"], keep="last")
@@ -339,19 +344,30 @@ def attach_future_prices(
 def current_day_bargains(
     daily_df: pd.DataFrame | None = None,
     as_of: str | pd.Timestamp | None = None,
+    days_from_today: int = 0,
     sp500_only: bool = True,
 ) -> pd.DataFrame:
     """
-    Run the trend-down sieve and return bargains flagged on `as_of`.
+    Run the trend-down sieve and return bargains in a recent window.
 
-    If `as_of` is None, uses the latest trading day present in `daily_df`.
+    Window is inclusive: [as_of - days_from_today, as_of].
+    `days_from_today=0` is only `as_of`; `days_from_today=7` is the past week
+    through `as_of`. If `as_of` is None, uses the latest trading day in `daily_df`.
+
     Applies the same optional short-term rebound filter and suppression as main().
-    By default (`sp500_only=True`), keeps only tickers in the S&P 500 on `as_of`
-    (point-in-time membership from data/sp500/).
+    By default (`sp500_only=True`), keeps only tickers in the S&P 500 on each
+    event's date (point-in-time membership from data/sp500/).
 
-    Columns: ticker, date, price, historical_average, discount
-    (discount = 1 - price / historical_average).
+    Results are sorted by date (newest first), then discount (highest first).
+    Columns: ticker, date, price, historical_average, discount,
+    as_of_price, price_ratio
+    (discount = 1 - price / historical_average;
+     price_ratio = as_of_price / price, where as_of_price is the close on
+     `as_of` or the latest prior trading day for that ticker).
     """
+    if days_from_today < 0:
+        raise ValueError(f"days_from_today must be >= 0 (got {days_from_today})")
+
     # Lazy import avoids a circular dependency with experiment_trend_down_params.
     from experiment_trend_down_params import (
         ever_sp500_tickers,
@@ -368,6 +384,7 @@ def current_day_bargains(
     data_end = daily_df["date"].max()
     as_of_ts = pd.Timestamp(as_of) if as_of is not None else data_end
     as_of_ts = as_of_ts.normalize()
+    window_start = (as_of_ts - pd.Timedelta(days=days_from_today)).normalize()
 
     if as_of_ts > data_end:
         raise ValueError(
@@ -377,7 +394,13 @@ def current_day_bargains(
 
     # Avoid look-ahead: only use prices on/before the evaluation day.
     daily_df = daily_df[daily_df["date"] <= as_of_ts].copy()
-    empty = pd.DataFrame(columns=[*_EVENT_COLUMNS, "discount"])
+    empty_cols = [
+        *_EVENT_COLUMNS,
+        "discount",
+        "as_of_price",
+        "price_ratio",
+    ]
+    empty = pd.DataFrame(columns=empty_cols)
     if daily_df.empty:
         return empty
 
@@ -403,43 +426,75 @@ def current_day_bargains(
 
     events = pd.DataFrame(trending_down_stocks, columns=_EVENT_COLUMNS)
     events["date"] = pd.to_datetime(events["date"])
-    today = events[events["date"] == as_of_ts].copy()
-    if today.empty:
+    in_window = events[
+        (events["date"] >= window_start) & (events["date"] <= as_of_ts)
+    ].copy()
+
+    if in_window.empty:
         trading_days = daily_df["date"].drop_duplicates().sort_values()
-        if as_of_ts not in set(trading_days):
+        if as_of_ts not in set(trading_days) and days_from_today == 0:
             nearest = trading_days[trading_days <= as_of_ts]
             hint = (
                 f" (nearest prior trading day in data: {nearest.iloc[-1].date()})"
                 if len(nearest)
                 else ""
             )
-            print(f"Note: {as_of_ts.date()} is not a trading day in the price data{hint}.")
+            print(
+                f"Note: {as_of_ts.date()} is not a trading day in the price data{hint}."
+            )
         return empty
 
     if sp500_only:
-        n_before = len(today)
-        today = filter_events_in_sp500(today, membership=membership)
+        n_before = len(in_window)
+        in_window = filter_events_in_sp500(in_window, membership=membership)
         print(
-            f"S&P 500 (point-in-time) filter on {as_of_ts.date()}: "
-            f"kept {len(today):,} / {n_before:,}"
+            f"S&P 500 (point-in-time) filter "
+            f"[{window_start.date()} → {as_of_ts.date()}]: "
+            f"kept {len(in_window):,} / {n_before:,}"
         )
-        if today.empty:
+        if in_window.empty:
             return empty
 
-    today["discount"] = 1.0 - today["price"] / today["historical_average"]
-    return today.sort_values(["discount", "ticker"], ascending=[False, True]).reset_index(
-        drop=True
+    in_window["discount"] = 1.0 - in_window["price"] / in_window["historical_average"]
+
+    # Close on as_of (or latest prior trading day) vs bargain flag price.
+    as_of_prices = (
+        daily_df.sort_values("date")
+        .groupby("ticker", sort=False)
+        .tail(1)[["ticker", "close_price"]]
+        .rename(columns={"close_price": "as_of_price"})
+    )
+    in_window = in_window.merge(as_of_prices, on="ticker", how="left")
+    in_window["price_ratio"] = in_window["as_of_price"] / in_window["price"]
+
+    return (
+        in_window.sort_values(
+            ["date", "discount"], ascending=[False, False]
+        ).reset_index(drop=True)
     )
 
 
 def print_current_bargains(
+    days_from_today: int = 0,
     as_of: str | pd.Timestamp | None = None,
     sp500_only: bool = True,
+    output_file: Path | None = None,
 ) -> pd.DataFrame:
-    """Load prices, find bargains on the current (or given) day, and print them."""
+    """
+    Load prices and print bargains in [as_of - days_from_today, as_of].
+
+    `days_from_today=0` → bargains on the as-of day (latest data day by default).
+    `days_from_today=7` → bargains over the past calendar week through as-of.
+    Sorted by date (recent → older), then discount (high → low).
+    Also prints as_of_price and price_ratio (= as_of_price / bargain price).
+    Saves the table to CSV (default: derived_data/current_bargains_<as_of>_daysN.csv).
+    """
+    if days_from_today < 0:
+        raise ValueError(f"days_from_today must be >= 0 (got {days_from_today})")
+
     universe = "S&P 500 (point-in-time)" if sp500_only else "all tickers"
     print("=" * 72)
-    print(f"Current-day trend-down bargains — {universe}")
+    print(f"Recent trend-down bargains — {universe}")
     print("=" * 72)
     print(f"  trend_down_thresh                = {config.trend_down_thresh}")
     print(f"  trend_down_history               = {config.trend_down_history}d")
@@ -448,18 +503,30 @@ def print_current_bargains(
     print(f"  rebound_short_term_per_thresh    = {config.rebound_short_term_per_thresh}")
     print(f"  trending_down_suppression        = {config.trending_down_suppression}d")
     print(f"  sp500_only                       = {sp500_only}")
+    print(f"  days_from_today                  = {days_from_today}")
     print("=" * 72)
 
     daily_df = load_daily_prices()
     data_end = pd.to_datetime(daily_df["date"]).max()
     as_of_ts = pd.Timestamp(as_of) if as_of is not None else data_end
-    print(f"Evaluating bargains for: {as_of_ts.date()}")
-    print(f"Price data through:      {data_end.date()}")
+    window_start = (as_of_ts - pd.Timedelta(days=days_from_today)).normalize()
+    print(f"Window:                 {window_start.date()} → {as_of_ts.date()}")
+    print(f"Price data through:     {data_end.date()}")
+    print(f"price_ratio = as_of_price ({as_of_ts.date()}) / bargain price")
 
     bargains = current_day_bargains(
-        daily_df=daily_df, as_of=as_of_ts, sp500_only=sp500_only
+        daily_df=daily_df,
+        as_of=as_of_ts,
+        days_from_today=days_from_today,
+        sp500_only=sp500_only,
     )
-    print(f"\nBargains on {as_of_ts.date()}: {len(bargains):,}")
+    if days_from_today == 0:
+        print(f"\nBargains on {as_of_ts.date()}: {len(bargains):,}")
+    else:
+        print(
+            f"\nBargains from {window_start.date()} to {as_of_ts.date()}: "
+            f"{len(bargains):,}"
+        )
     if bargains.empty:
         print("None.")
     else:
@@ -470,7 +537,25 @@ def print_current_bargains(
             lambda x: f"{x:.4f}"
         )
         display["discount"] = display["discount"].map(lambda x: f"{x:.1%}")
+        display["as_of_price"] = display["as_of_price"].map(
+            lambda x: f"{x:.4f}" if pd.notna(x) else "n/a"
+        )
+        display["price_ratio"] = display["price_ratio"].map(
+            lambda x: f"{x:.3f}" if pd.notna(x) else "n/a"
+        )
         print(display.to_string(index=False))
+
+    if output_file is None:
+        output_file = (
+            STOOQ_SAVE_DIR
+            / f"current_bargains_{as_of_ts.date()}_days{days_from_today}.csv"
+        )
+    STOOQ_SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    bargains.to_csv(output_file, index=False)
+    # Also refresh a stable alias path for convenience.
+    bargains.to_csv(OUTPUT_FILE_CURRENT, index=False)
+    print(f"\nSaved {len(bargains):,} rows to {output_file}")
+    print(f"Also wrote {OUTPUT_FILE_CURRENT}")
     print("=" * 72)
     return bargains
 
@@ -637,8 +722,18 @@ if __name__ == "__main__":
         const="LATEST",
         metavar="YYYY-MM-DD",
         help=(
-            "Print S&P 500 (point-in-time) bargains for the latest trading day "
-            "in the data (or for YYYY-MM-DD if given)"
+            "Print S&P 500 (point-in-time) bargains ending on the latest trading "
+            "day in the data (or on YYYY-MM-DD if given). Use --days for lookback."
+        ),
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "With --today: include bargains from the past N calendar days "
+            "through the as-of date (default: 0 = as-of day only)"
         ),
     )
     parser.add_argument(
@@ -651,7 +746,8 @@ if __name__ == "__main__":
         debug_trend_down(args.debug)
     elif args.today is not None:
         print_current_bargains(
-            None if args.today == "LATEST" else args.today,
+            days_from_today=args.days,
+            as_of=None if args.today == "LATEST" else args.today,
             sp500_only=not args.all_tickers,
         )
     else:

@@ -466,14 +466,25 @@ def process_stock_directory(
 
                 if "<CLOSE>" in df.columns:
                     close_col, date_col = "<CLOSE>", "<DATE>"
+                    open_col = "<OPEN>" if "<OPEN>" in df.columns else None
                 else:
                     close_col, date_col = "Close", "Date"
+                    open_col = "Open" if "Open" in df.columns else None
 
-                stock_df = df[[date_col, close_col]].copy()
+                cols = [date_col, close_col]
+                if open_col is not None:
+                    cols.append(open_col)
+                stock_df = df[cols].copy()
                 stock_df["ticker"] = ticker
                 stock_df["exchange"] = dir_path.name
-                stock_df = stock_df.rename(columns={date_col: "date", close_col: "close_price"})
-                stock_df = stock_df[["ticker", "exchange", "date", "close_price"]]
+                rename = {date_col: "date", close_col: "close_price"}
+                if open_col is not None:
+                    rename[open_col] = "open_price"
+                stock_df = stock_df.rename(columns=rename)
+                keep = ["ticker", "exchange", "date", "close_price"]
+                if "open_price" in stock_df.columns:
+                    keep.append("open_price")
+                stock_df = stock_df[keep]
                 all_stock_data.append(stock_df)
             except Exception as exc:
                 if verbose:

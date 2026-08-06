@@ -3,19 +3,16 @@ config.py
 - Central project paths
 - Trend-down detection parameters
 - Thresholds, history/suppression/future windows (days)
-- Short-term rebound settings","- Import only (not a script)",- N/A,- none,"- Edit here to change sieve defaults
-- Used by trend_down_stocks, experiments, and benchmarks"
-
-utilities/__init__.py,"- Package marker for utilities
-- Short package description","- Import only (not a script)",- N/A,- none,- No logic beyond the package docstring
-
-utilities/stock_stooq.py,"- Stooq US daily data utilities
+- Short-term rebound settings 
+- Used by trend_down_stocks, experiments, and benchmarks
+ 
+utilities/stock_stooq.py
+- Stooq US daily data utilities
 - Manual-download instructions for d_us_txt.zip
 - Unzip/reorganize into data/stock_Stooq_daily_US/
 - Load prices, CIK mapping, month-end prices
-- Build price-trend derived tables","- python utilities/stock_stooq.py","- Prepared tree: data/stock_Stooq_daily_US/
-- Derived CSVs: data/stock_Stooq_daily_US/derived_data/",- none,"- Stooq bulk zip needs captcha — download manually to data/stooq/d_us_txt.zip
-- US package is stocks + ETFs only (no ^DJI index)"
+- Build price-trend derived tables 
+- US package is stocks + ETFs only (no ^DJI index)
 
 trend_down_stocks.py,"- Find trend-down bargain events
 - Load daily closes
@@ -23,36 +20,39 @@ trend_down_stocks.py,"- Find trend-down bargain events
 - Optional short-term rebound filter
 - Suppress near-duplicates
 - Attach future price for supervision
-- Debug/plot one ticker via --debug","- python trend_down_stocks.py
-- python trend_down_stocks.py --debug
-- python trend_down_stocks.py --debug AAPL","- data/stock_Stooq_daily_US/derived_data/trending_down_stocks.csv
-- debug plot: derived_data/debug_trend_down_<TICKER>.png","- config.py
-- utilities/stock_stooq.py","- Reuses existing trending_down_stocks.csv if present
-- Otherwise runs the full pipeline
-- Parameters come from config.py
-- --debug defaults to INTU"
+- Debug/plot one ticker via --debug like "python trend_down_stocks.py --debug AAPL", --debug defaults to INTU"
 
 experiment_trend_down_params.py,"- Parameter experiments for trend-down settings
 - Grid sweep of thresholds / rebound options
-- Fortune 500 vs non-F500 rebound stats
-- Caches daily prices to a pickle for reuse","- python experiment_trend_down_params.py  → compare_fortune500_vs_rest()
+- S&P 500 (point-in-time) vs non-S&P rebound stats
+- S&P 500 rebound-by-horizon (1–52 weeks) vs all tickers + chart
+- Caches daily prices to a pickle for reuse","- python experiment_trend_down_params.py  → sp500_rebound_by_horizon()
+- Call compare_sp500_vs_rest() for S&P 500 (PIT) vs rest
 - Call trend_down_param_sweep() for the grid","- derived_data/daily_prices.pkl
 - trend_down_param_sweep.csv
-- trend_down_fortune500_compare.csv
-- Expects data/fortune500/fortune500_tickers.csv","- config.py
+- trend_down_sp500_compare.csv
+- sp500_rebound_by_horizon.csv (group: sp500 / all)
+- sp500_rebound_by_horizon.png
+- Expects data/sp500/sp500_ticker_start_end.csv (fja05680/sp500)","- config.py
 - trend_down_stocks.py","- STATS_SINCE defaults to 2010-01-01 for summary metrics
-- Grid values are defined at top of file"
+- Grid values are defined at top of file
+- Horizon uses attach_future_prices at 7d, 14d, …, 364d for S&P 500 (PIT) and all
+- Membership is point-in-time (start_date <= event_date < end_date)"
 
 benchmark_invest.py,"- Backtest bargain vs index strategies since 2000
-- Strategy 1: Fortune 500 bargains
-- Strategy 2: DIA Dow-proxy on the same F500 signal dates
-- Strategy 3: all-ticker bargains
+- Strategy 1: S&P 500 (point-in-time) bargains; buy next-day open
+- Strategy 2: DIA Dow-proxy on the same Strategy-1 buy dates (open)
+- Strategy 3: weekly DIA buys, sell after HOLD_MONTHS
 - Fractional shares, no tax
-- Reports cash, holdings, per-trade price_change, and P&L","- python benchmark_invest.py","- derived_data/benchmark_invest/strategy1_bargain_f500_transactions.csv
+- Reports cash, holdings, per-trade price_change, and P&L","- python benchmark_invest.py","- derived_data/benchmark_invest/strategy1_bargain_sp500_transactions.csv
 - strategy2_index_transactions.csv
-- strategy3_bargain_all_transactions.csv
-- benchmark_summary.csv","- config.py
+- strategy3_dia_weekly_transactions.csv
+- benchmark_summary.csv
+- strategy1_vs_2_yearly_returns.png","- config.py
 - trend_down_stocks.py
 - experiment_trend_down_params.py","- INVEST_AMOUNT and HOLD_MONTHS are module constants
 - DIA is used as Dow proxy (Stooq US zip has no ^DJI; DIA starts 2005-02-25)
-- Strategies 1–2 are paired 1:1 on tradable signals"
+- Strategies 1–2 are paired 1:1 on tradable signals
+- Strategy 1 signals at close, executes at next trading day's open
+- Strategy 3 buys last trading day of each week; sells closest day ~HOLD_MONTHS later
+- Strategy 1 filters by historical S&P 500 membership on the bargain date"
