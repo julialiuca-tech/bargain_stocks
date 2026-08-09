@@ -5,8 +5,8 @@ Stooq US daily stock-price utilities.
 1. Download d_us_txt.zip manually from https://stooq.com/db/h/ (captcha required)
    and save it under data/stooq/.
 2. prepare_stooq_data() unzips and reorganizes into data/stock_Stooq_daily_US/.
-3. load_stooq_stock_data() / month_end_price_stooq() / price_trend() turn that
-   tree into derived CSVs under data/stock_Stooq_daily_US/derived_data/.
+3. build_month_end_and_price_trends() writes month_end_price_stooq.csv and
+   price_trends_{N}month.csv under data/stock_Stooq_daily_US/derived_data/.
 
 Usage:
   python utilities/stock_stooq.py
@@ -576,12 +576,19 @@ def month_end_price_stooq(df_combined: pd.DataFrame) -> pd.DataFrame:
     ].reset_index(drop=True)
 
 
-def build_derived_stooq_data(
+def build_month_end_and_price_trends(
     force_rebuild_month_end: bool = False,
     date_start: str = DATE_RANGE_START,
     date_end: str = DATE_RANGE_END,
 ) -> bool:
-    """Load prepared Stooq files and write month-end + trend CSVs to derived_data/."""
+    """
+    Load prepared Stooq daily prices and write:
+      - month_end_price_stooq.csv
+      - price_trends_{N}month.csv for each horizon in TREND_HORIZONS_MONTHS
+
+    Month-end construction also applies date/price filters and drops CIKs with
+    missing months. Existing month-end CSV is reused unless force_rebuild_month_end.
+    """
     STOOQ_SAVE_DIR.mkdir(parents=True, exist_ok=True)
     month_end_price_file = STOOQ_SAVE_DIR / "month_end_price_stooq.csv"
 
@@ -606,7 +613,12 @@ def build_derived_stooq_data(
         month_end_df = pd.read_csv(month_end_price_file)
         print(f"Using existing month-end prices: {month_end_price_file}")
 
-    month_end_df["year_month"] = pd.to_datetime(month_end_df["year_month"]).dt.to_period("M")
+    # Freshly built frames already have PeriodDtype; CSV reloads need conversion.
+    if not isinstance(month_end_df["year_month"].dtype, pd.PeriodDtype):
+        month_end_df["year_month"] = pd.to_datetime(
+            month_end_df["year_month"]
+        ).dt.to_period("M")
+
 
     for horizon in TREND_HORIZONS_MONTHS:
         trend_df = price_trend(month_end_df, trend_horizon_in_months=horizon)
@@ -615,7 +627,7 @@ def build_derived_stooq_data(
             trend_df.to_csv(output_file, index=False)
             print(f"{horizon}-month trends saved to: {output_file}")
 
-    print("Derived Stooq data complete.")
+    print("Month-end prices and price trends complete.")
     return True
 
 
@@ -652,8 +664,8 @@ def main() -> None:
             f"Stock data at {STOOQ_BASE_DIR} seems up-to-date "
             f"(last modified {prepared_date})."
         )
-
-    build_derived_stooq_data()
+    df_combined = load_stooq_stock_data()
+    # build_month_end_and_price_trends()
 
 
 if __name__ == "__main__":
