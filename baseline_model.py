@@ -26,7 +26,7 @@ Train/val split (edit SPLIT_STRATEGY near top of file):
   None                — random row split
 
 Scoring (after training):
-  from baseline_model import load_scoring_bundle, score_bargain_events
+  from baseline_model import score_bargain_events
   scored = score_bargain_events(
       events_df,  # needs date + ticker (or cik)
       "derived_data/models/good_buy_model_rf_top40.pkl",
@@ -635,16 +635,16 @@ def train_and_eval(
     }
 
 
-def save_scoring_bundle(result: dict, path: Path) -> Path:
+def save_model_bundle(result: dict, path: Path) -> Path:
     """
     Persist a trained model + scoring metadata for later inference.
 
-    Bundle keys:
+    model_bundle keys:
       model, model_name, feature_cols, impute_medians, metrics, y_label
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    bundle = {
+    model_bundle = {
         "model": result["model"],
         "model_name": result["model_name"],
         "feature_cols": list(result["feature_cols"]),
@@ -653,39 +653,39 @@ def save_scoring_bundle(result: dict, path: Path) -> Path:
         "y_label": Y_LABEL,
     }
     with path.open("wb") as f:
-        pickle.dump(bundle, f)
+        pickle.dump(model_bundle, f)
     print(
-        f"Saved scoring bundle ({bundle['model_name']}, "
-        f"{len(bundle['feature_cols'])} features) → {path}"
+        f"Saved model_bundle ({model_bundle['model_name']}, "
+        f"{len(model_bundle['feature_cols'])} features) → {path}"
     )
     return path
 
 
-def load_scoring_bundle(path: Path) -> dict:
-    """Load a bundle written by save_scoring_bundle()."""
+def load_model_bundle(path: Path) -> dict:
+    """Load a model_bundle written by save_model_bundle()."""
     with Path(path).open("rb") as f:
         return pickle.load(f)
 
 
-def score_feature_frame(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
+def score_feature_frame(df: pd.DataFrame, model_bundle: dict) -> pd.DataFrame:
     """
     Score rows that already have (most of) the needed feature columns.
 
     Returns a copy of df with y_pred and y_pred_proba added.
     Missing feature columns / values are filled with training medians.
     """
-    feature_cols = list(bundle["feature_cols"])
+    feature_cols = list(model_bundle["feature_cols"])
     X = pd.DataFrame(index=df.index)
     for col in feature_cols:
         X[col] = df[col] if col in df.columns else np.nan
 
-    medians = bundle["impute_medians"]
+    medians = model_bundle["impute_medians"]
     if isinstance(medians, pd.Series):
         X = X.fillna(medians.reindex(feature_cols))
     else:
         X = X.fillna(medians)
 
-    model = bundle["model"]
+    model = model_bundle["model"]
     out = df.copy()
     out["y_pred"] = model.predict(X)
     out["y_pred_proba"] = model.predict_proba(X)[:, 1]
@@ -694,7 +694,7 @@ def score_feature_frame(df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
 
 def score_bargain_events(
     events: pd.DataFrame,
-    bundle: dict | Path | str,
+    model_bundle: dict | Path | str,
     sec: pd.DataFrame | None = None,
     feats: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
@@ -703,7 +703,7 @@ def score_bargain_events(
 
     Args:
         events: Bargain rows with at least (date, ticker) or (date, cik).
-        bundle: Scoring bundle dict, or path to a good_buy_model_*.pkl.
+        model_bundle: Model bundle dict, or path to a good_buy_model_*.pkl.
         sec: Optional preloaded sec_table_w_file_date (loaded if None).
         feats: Optional preloaded *prepared* featurized table (ratios + gradients).
                If None, loads and runs prep_featurized_features() (slow).
@@ -712,8 +712,8 @@ def score_bargain_events(
         Events that successfully joined to SEC features, with y_pred and
         y_pred_proba added. Events without a prior filing / features are dropped.
     """
-    if isinstance(bundle, (str, Path)):
-        bundle = load_scoring_bundle(bundle)
+    if isinstance(model_bundle, (str, Path)):
+        model_bundle = load_model_bundle(model_bundle)
 
     events_prep = prepare_bargain_events(events)
     if events_prep.empty:
@@ -733,11 +733,11 @@ def score_bargain_events(
         print("No events could be joined to SEC features")
         return joined
 
-    scored = score_feature_frame(joined, bundle)
+    scored = score_feature_frame(joined, model_bundle)
     print(
         f"Scored {len(scored):,} / {len(events_prep):,} events "
-        f"with model={bundle.get('model_name', '?')} "
-        f"({len(bundle['feature_cols'])} features)"
+        f"with model={model_bundle.get('model_name', '?')} "
+        f"({len(model_bundle['feature_cols'])} features)"
     )
     return scored
 
@@ -806,7 +806,7 @@ def main() -> None:
         print(f"Saved top-{TOP_K_FEATURES} feature importance to {topk_path}")
 
         # Final scoring models: top-K feature set (enough for bargain-time inference).
-        save_scoring_bundle(
+        save_model_bundle(
             topk,
             MODEL_DIR / f"good_buy_model_{model_name}_top{TOP_K_FEATURES}.pkl",
         )
