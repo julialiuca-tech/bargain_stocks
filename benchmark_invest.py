@@ -14,10 +14,6 @@ Strategy 2 — index benchmark:
   Strategies 1 and 2 are paired 1:1 on the same signals (only signals where
   both the bargain ticker and DIA are tradable are kept).
 
-Strategy 3 — weekly DIA purchases:
-  Every week, buy $1 of DIA (last trading day of the week) and sell at the
-  trading day closest to HOLD_MONTHS after the purchase date.
-
 Assumptions: fractional shares allowed, no taxes/fees, start cash $1,000,000.
 
 Note: Stooq's US daily package does not include the ^DJI index series.
@@ -63,7 +59,6 @@ INDEX_ETF_PATTERN = "nyse_etf*"
 TXN_DIR = STOOQ_SAVE_DIR / "benchmark_invest"
 STRATEGY1_TXN_FILE = TXN_DIR / "strategy1_bargain_sp500_transactions.csv"
 STRATEGY2_TXN_FILE = TXN_DIR / "strategy2_index_transactions.csv"
-STRATEGY3_TXN_FILE = TXN_DIR / "strategy3_dia_weekly_transactions.csv"
 SUMMARY_FILE = TXN_DIR / "benchmark_summary.csv"
 YEARLY_RETURNS_PLOT_FILE = TXN_DIR / "strategy1_vs_2_yearly_returns.png"
 
@@ -560,66 +555,6 @@ def build_strategy2_trades(
     return pd.DataFrame(rows)
 
 
-def build_weekly_dia_trades(
-    index_df: pd.DataFrame,
-    index_ticker: str = INDEX_TICKER,
-    horizon_start: pd.Timestamp = HORIZON_START,
-    hold_months: int = HOLD_MONTHS,
-) -> pd.DataFrame:
-    """
-    Buy the index once per calendar week (last trading day of the week);
-    sell at the trading day closest to hold_months after each buy.
-    """
-    empty_cols = [
-        "signal_ticker",
-        "buy_ticker",
-        "buy_date",
-        "buy_price",
-        "target_sell_date",
-        "sell_date",
-        "sell_price",
-    ]
-    df = index_df[index_df["date"] >= horizon_start].copy()
-    if df.empty:
-        return pd.DataFrame(columns=empty_cols)
-
-    df = df.sort_values("date")
-    df["week"] = df["date"].dt.to_period("W-SUN")
-    weekly = df.groupby("week", as_index=False).last()
-
-    index_dates = pd.DatetimeIndex(df["date"].to_numpy())
-    index_prices = df["close_price"].reset_index(drop=True)
-
-    rows: list[dict] = []
-    for row in weekly.itertuples(index=False):
-        buy_date = pd.Timestamp(row.date)
-        buy_price = float(row.close_price)
-        target = buy_date + pd.DateOffset(months=hold_months)
-        sell_date, sell_price = closest_trading_quote(
-            index_dates, index_prices, target
-        )
-        # Need a real post-buy exit near the target; otherwise leave open (MTM later).
-        if (
-            pd.isna(sell_date)
-            or sell_date <= buy_date
-            or abs(sell_date - target) > pd.Timedelta(days=7)
-        ):
-            sell_date, sell_price = pd.NaT, float("nan")
-
-        rows.append(
-            {
-                "signal_ticker": index_ticker,
-                "buy_ticker": index_ticker,
-                "buy_date": buy_date,
-                "buy_price": buy_price,
-                "target_sell_date": target,
-                "sell_date": sell_date,
-                "sell_price": sell_price,
-            }
-        )
-    return pd.DataFrame(rows)
-
-
 def paired_tradable_mask(s1_trades: pd.DataFrame, s2_trades: pd.DataFrame) -> pd.Series:
     """True where both strategies can execute the buy for the same signal."""
     if len(s1_trades) != len(s2_trades):
@@ -841,10 +776,10 @@ def analyze_year_stats(
 
 def main() -> None:
     print("=" * 72)
-    print("Benchmark invest: S&P 500 (PIT) bargains vs DIA (signal) vs DIA weekly")
+    print("Benchmark invest: S&P 500 (PIT) bargains vs DIA (signal-paired)")
     print("=" * 72)
     print(f"  start_cash      = ${START_CASH:,.0f}")
-    print(f"  invest_amount   = ${INVEST_AMOUNT:,.0f} per signal / per week")
+    print(f"  invest_amount   = ${INVEST_AMOUNT:,.0f} per signal")
     print(f"  horizon_start   = {HORIZON_START.date()}")
     print(f"  hold            = {HOLD_MONTHS} months (closest trading day)")
     print(f"  index_proxy     = {INDEX_TICKER} (Stooq has no ^DJI in US daily zip)")
@@ -900,16 +835,6 @@ def main() -> None:
             f"(DIA history starts {index_start.date()})"
         )
 
-    # Strategy 3: weekly DIA buy, sell after HOLD_MONTHS.
-    s3_trades = build_weekly_dia_trades(index_df)
-    n_s3_with_sell = int(s3_trades["sell_price"].notna().sum()) if len(s3_trades) else 0
-    print(
-        f"Strategy 3 weekly {INDEX_TICKER} buys: {len(s3_trades):,} "
-        f"({s3_trades['buy_date'].min().date() if len(s3_trades) else 'n/a'} → "
-        f"{s3_trades['buy_date'].max().date() if len(s3_trades) else 'n/a'}; "
-        f"{n_s3_with_sell:,} with a {HOLD_MONTHS}m sell quote)"
-    )
-
     last_px = {
         t: float(prices.iloc[-1])
         for t, (_dates, prices) in close_maps.items()
@@ -920,14 +845,12 @@ def main() -> None:
 
     s1 = simulate_strategy("strategy1_bargain_sp500", s1_trades, last_prices=last_px)
     s2 = simulate_strategy("strategy2_index", s2_trades, last_prices=last_px)
-    s3 = simulate_strategy("strategy3_dia_weekly", s3_trades, last_prices=last_px)
 
     TXN_DIR.mkdir(parents=True, exist_ok=True)
     s1.transactions.to_csv(STRATEGY1_TXN_FILE, index=False)
     s2.transactions.to_csv(STRATEGY2_TXN_FILE, index=False)
-    s3.transactions.to_csv(STRATEGY3_TXN_FILE, index=False)
 
-    summary = pd.DataFrame([summary_row(s1), summary_row(s2), summary_row(s3)])
+    summary = pd.DataFrame([summary_row(s1), summary_row(s2)])
     summary.to_csv(SUMMARY_FILE, index=False)
 
     print("\n" + "=" * 72)
@@ -957,7 +880,6 @@ def main() -> None:
     print(f"\nSaved transactions:")
     print(f"  {STRATEGY1_TXN_FILE}")
     print(f"  {STRATEGY2_TXN_FILE}")
-    print(f"  {STRATEGY3_TXN_FILE}")
     print(f"  {SUMMARY_FILE}")
 
 

@@ -42,11 +42,9 @@ experiment_trend_down_params.py,"- Parameter experiments for trend-down settings
 benchmark_invest.py,"- Backtest bargain vs index strategies since 2000
 - Strategy 1: S&P 500 (point-in-time) bargains; buy next-day open
 - Strategy 2: DIA Dow-proxy on the same Strategy-1 buy dates (open)
-- Strategy 3: weekly DIA buys, sell after HOLD_MONTHS
 - Fractional shares, no tax
 - Reports cash, holdings, per-trade price_change, and P&L","- python benchmark_invest.py","- derived_data/benchmark_invest/strategy1_bargain_sp500_transactions.csv
 - strategy2_index_transactions.csv
-- strategy3_dia_weekly_transactions.csv
 - benchmark_summary.csv
 - strategy1_vs_2_yearly_returns.png","- config.py
 - trend_down_stocks.py
@@ -54,5 +52,4 @@ benchmark_invest.py,"- Backtest bargain vs index strategies since 2000
 - DIA is used as Dow proxy (Stooq US zip has no ^DJI; DIA starts 2005-02-25)
 - Strategies 1–2 are paired 1:1 on tradable signals
 - Strategy 1 signals at close, executes at next trading day's open
-- Strategy 3 buys last trading day of each week; sells closest day ~HOLD_MONTHS later
 - Strategy 1 filters by historical S&P 500 membership on the bargain date"
