@@ -2,6 +2,9 @@
 data/**
 !data/.gitkeep
 
+# Generated artifacts (models, caches, backtest outputs)
+derived_data/
+
 # Python
 __pycache__/
 *.py[cod]
