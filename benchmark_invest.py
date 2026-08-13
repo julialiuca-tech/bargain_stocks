@@ -541,17 +541,8 @@ def build_bargain_trades(
     return pd.DataFrame(rows)
 
 
-def build_strategy1_trades(
-    bargains: pd.DataFrame,
-    close_maps: dict[str, tuple[pd.DatetimeIndex, pd.Series]],
-    open_maps: dict[str, tuple[pd.DatetimeIndex, pd.Series]],
-) -> pd.DataFrame:
-    """Alias kept for clarity at call sites."""
-    return build_bargain_trades(bargains, close_maps, open_maps)
-
-
-def build_strategy1b_trades(
-    s1_trades: pd.DataFrame,
+def build_index_paired_trades(
+    paired_trades: pd.DataFrame,
     index_dates: pd.DatetimeIndex,
     index_opens: pd.Series,
     index_closes: pd.Series,
@@ -559,12 +550,12 @@ def build_strategy1b_trades(
     hold_months: int = HOLD_MONTHS,
 ) -> pd.DataFrame:
     """
-    One index trade per paired bargain row: buy DIA at the open on the
-    bargain strategy's buy_date; sell closest close ~hold_months later.
+    One index trade per paired bargain row: buy at the open on the bargain
+    strategy's buy_date; sell closest close ~hold_months later.
     Used for Strategy 1b (vs 1) and Strategy 3b (vs 3).
     """
     rows: list[dict] = []
-    for row in s1_trades.itertuples(index=False):
+    for row in paired_trades.itertuples(index=False):
         signal_ticker = row.signal_ticker
         signal_date = pd.Timestamp(row.signal_date) if pd.notna(row.signal_date) else pd.NaT
         paired_buy_date = pd.Timestamp(row.buy_date) if pd.notna(row.buy_date) else pd.NaT
@@ -614,14 +605,14 @@ def build_strategy1b_trades(
     return pd.DataFrame(rows)
 
 
-def build_strategy2_trades(
+def build_monday_index_trades(
     index_df: pd.DataFrame,
     index_ticker: str = INDEX_TICKER,
     horizon_start: pd.Timestamp = HORIZON_START,
     hold_months: int = STRATEGY2_HOLD_MONTHS,
 ) -> pd.DataFrame:
     """
-    Buy $1 of DIA every Monday (next session if Monday is closed);
+    Buy $1 of the index every Monday (next session if Monday is closed);
     sell that lot ~hold_months later at the closest trading day's close.
     """
     empty_cols = [
@@ -763,36 +754,6 @@ def filter_bargains_by_model_score(
             f"max={out['y_pred_proba'].max():.3f}"
         )
     return out.sort_values(["date", "ticker"]).reset_index(drop=True)
-
-
-def build_strategy3_trades(
-    bargains: pd.DataFrame,
-    close_maps: dict[str, tuple[pd.DatetimeIndex, pd.Series]],
-    open_maps: dict[str, tuple[pd.DatetimeIndex, pd.Series]],
-) -> pd.DataFrame:
-    """
-    Strategy 3 trades: same execution as Strategy 1 on model-filtered bargains.
-    Keeps non-tradable rows as NaN so Strategy 3b can be paired 1:1, then filtered.
-    """
-    trades = build_bargain_trades(bargains, close_maps, open_maps)
-    if "y_pred_proba" in bargains.columns:
-        score_map = bargains.set_index(["ticker", "date"])["y_pred_proba"]
-        keys = list(zip(trades["signal_ticker"], pd.to_datetime(trades["signal_date"])))
-        trades["y_pred_proba"] = pd.Series(keys, index=trades.index).map(score_map)
-    return trades
-
-
-def build_strategy3b_trades(
-    s3_trades: pd.DataFrame,
-    index_dates: pd.DatetimeIndex,
-    index_opens: pd.Series,
-    index_closes: pd.Series,
-    index_ticker: str = INDEX_TICKER,
-) -> pd.DataFrame:
-    """One DIA trade per Strategy-3 row (same pairing logic as Strategy 1b vs 1)."""
-    return build_strategy1b_trades(
-        s3_trades, index_dates, index_opens, index_closes, index_ticker=index_ticker
-    )
 
 
 def paired_tradable_mask(left_trades: pd.DataFrame, right_trades: pd.DataFrame) -> pd.Series:
@@ -1059,7 +1020,7 @@ def main() -> None:
 
     # Strategies 1 & 1b: 1:1 paired S&P 500 signals where both ticker and DIA trade.
     s1_all = build_bargain_trades(bargains_sp500, close_maps, open_maps)
-    s1b_all = build_strategy1b_trades(
+    s1b_all = build_index_paired_trades(
         s1_all, index_dates, index_opens, index_closes
     )
     pair_ok = paired_tradable_mask(s1_all, s1b_all)
@@ -1082,7 +1043,7 @@ def main() -> None:
         )
 
     # Strategy 2: buy DIA every Monday, sell after STRATEGY2_HOLD_MONTHS.
-    s2_trades = build_strategy2_trades(index_df)
+    s2_trades = build_monday_index_trades(index_df)
     print(
         f"\nStrategy 2 Monday {INDEX_TICKER} buys: {len(s2_trades):,} "
         f"(hold ≈ {STRATEGY2_HOLD_MONTHS} months)"
@@ -1090,8 +1051,14 @@ def main() -> None:
 
     # Strategies 3 & 3b: model-filtered S&P 500 bargains, paired 1:1 with DIA.
     bargains_s3 = filter_bargains_by_model_score(bargains_sp500)
-    s3_all = build_strategy3_trades(bargains_s3, close_maps, open_maps)
-    s3b_all = build_strategy3b_trades(
+    s3_all = build_bargain_trades(bargains_s3, close_maps, open_maps)
+    if "y_pred_proba" in bargains_s3.columns:
+        score_map = bargains_s3.set_index(["ticker", "date"])["y_pred_proba"]
+        keys = list(
+            zip(s3_all["signal_ticker"], pd.to_datetime(s3_all["signal_date"]))
+        )
+        s3_all["y_pred_proba"] = pd.Series(keys, index=s3_all.index).map(score_map)
+    s3b_all = build_index_paired_trades(
         s3_all, index_dates, index_opens, index_closes
     )
     pair_ok_s3 = paired_tradable_mask(s3_all, s3b_all)
