@@ -21,9 +21,9 @@ Usage:
   python baseline_model.py
 
 Train/val split (edit SPLIT_STRATEGY near top of file):
-  {"date": "bottom"}  — time-based, ~TRAIN_FRAC of rows in train (default)
+  None                — random row split (current default)
+  {"date": "bottom"}  — time-based, ~TRAIN_FRAC of rows in train
   {"cik": "random"}   — hold out random companies
-  None                — random row split
 
 Scoring (after training):
   from baseline_model import score_bargain_events
@@ -79,17 +79,22 @@ FILTER_OUTLIERS_FROM_RATIOS = True
 SUFFIXES_TO_ENHANCE_W_GRADIENT = ("_current", "_augment")
 FEATURE_SUFFIXES = ("_current", "_augment") if USE_RATIO_FEATURES else ("_current",)
 QUARTER_GRADIENTS = [1, 2, 4]
+# QUARTER_GRADIENTS = []
 COMPLETENESS_THRESHOLD = 0.20
-TOP_K_FEATURES = 40
+TOP_K_FEATURES = 50
 TRAIN_FRAC = 0.70
 RANDOM_SEED = 42
+
 # Train/val split experiments (same idea as sec_report_predict):
 #   {"date": "bottom"}  — earliest dates until ~TRAIN_FRAC of rows (time-based)
 #   {"date": "top"}     — latest dates in train
 #   {"cik": "random"}   — hold out random companies
 #   {"cik": "bottom"}   — split companies by sorted CIK
 #   None                — random row split
-SPLIT_STRATEGY: dict[str, str] | None = {"date": "bottom"}
+SPLIT_STRATEGY: dict[str, str] | None = {"cik": "random"} 
+DEBUG_PRINT = False
+# Edges for y_pred_proba calibration-style reporting on val.
+PROBA_BIN_EDGES = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
 # Meta columns that are not model features.
 META_COLS = {
@@ -286,7 +291,7 @@ def load_sec_table(path: Path = SEC_TABLE_FILE) -> pd.DataFrame:
     return sec.reset_index(drop=True)
 
 
-def load_featurized(path: Path = FEATURIZED_FILE) -> pd.DataFrame:
+def load_featurized_sec(path: Path = FEATURIZED_FILE) -> pd.DataFrame:
     """Load raw SEC featurized quarterly rows (augmentation happens in prep)."""
     if not path.exists():
         raise FileNotFoundError(f"Missing {path}.")
@@ -551,8 +556,11 @@ def train_and_eval(
     df_val: pd.DataFrame,
     feature_cols: list[str],
     model_name: str = "rf",
+    debug_print: bool | None = None,
 ) -> dict:
-    """Train RF or XGB baseline and print validation metrics."""
+    """Train RF or XGB baseline and optionally print validation metrics."""
+    if debug_print is None:
+        debug_print = DEBUG_PRINT
     if not feature_cols:
         raise RuntimeError("No feature columns selected.")
     if model_name not in ("rf", "xgb"):
@@ -615,15 +623,16 @@ def train_and_eval(
         .reset_index(drop=True)
     )
 
-    print(f"\nValidation metrics ({display_name}):")
-    for k, v in metrics.items():
-        if isinstance(v, float):
-            print(f"  {k:28s} = {v:.4f}")
-        else:
-            print(f"  {k:28s} = {v}")
+    if debug_print:
+        print(f"\nValidation metrics ({display_name}):")
+        for k, v in metrics.items():
+            if isinstance(v, float):
+                print(f"  {k:28s} = {v:.4f}")
+            else:
+                print(f"  {k:28s} = {v}")
 
-    print(f"\nTop 15 features ({display_name}):")
-    print(importance.head(15).to_string(index=False))
+        print(f"\nTop 15 features ({display_name}):")
+        print(importance.head(15).to_string(index=False))
 
     return {
         "model": model,
@@ -675,9 +684,8 @@ def score_feature_frame(df: pd.DataFrame, model_bundle: dict) -> pd.DataFrame:
     Missing feature columns / values are filled with training medians.
     """
     feature_cols = list(model_bundle["feature_cols"])
-    X = pd.DataFrame(index=df.index)
-    for col in feature_cols:
-        X[col] = df[col] if col in df.columns else np.nan
+    # Build in one shot to avoid fragmented frame.insert PerformanceWarnings.
+    X = df.reindex(columns=feature_cols)
 
     medians = model_bundle["impute_medians"]
     if isinstance(medians, pd.Series):
@@ -724,7 +732,7 @@ def score_bargain_events(
         sec = load_sec_table()
     if feats is None:
         feats = prep_featurized_features(
-            load_featurized(),
+            load_featurized_sec(),
             quarters_for_gradient_comp=list(QUARTER_GRADIENTS),
         )
 
@@ -742,6 +750,87 @@ def score_bargain_events(
     return scored
 
 
+def report_val_proba_bins(
+    df_val: pd.DataFrame,
+    result: dict,
+    bin_edges: list[float] | None = None,
+    model_label: str | None = None,
+) -> pd.DataFrame:
+    """
+    Bin validation rows by y_pred_proba; report volume and accuracy per bin.
+
+    Accuracy in a bin = fraction of rows where the model's hard prediction
+    (threshold 0.5) matches the true label.
+    """
+    if bin_edges is None:
+        bin_edges = list(PROBA_BIN_EDGES)
+    if Y_LABEL not in df_val.columns:
+        raise KeyError(f"df_val needs label column {Y_LABEL!r}")
+
+    model_bundle = {
+        "model": result["model"],
+        "feature_cols": result["feature_cols"],
+        "impute_medians": result["impute_medians"],
+    }
+    scored = score_feature_frame(df_val, model_bundle)
+    y_true = scored[Y_LABEL].astype(int)
+    y_proba = scored["y_pred_proba"].astype(float)
+    y_pred = scored["y_pred"].astype(int)
+
+    # Closed on the right so y_pred_proba == 1.0 falls in the last bin.
+    labels = [
+        f"[{bin_edges[i]:.1f}, {bin_edges[i + 1]:.1f}]"
+        if i == 0
+        else f"({bin_edges[i]:.1f}, {bin_edges[i + 1]:.1f}]"
+        for i in range(len(bin_edges) - 1)
+    ]
+    bins = pd.cut(
+        y_proba,
+        bins=bin_edges,
+        labels=labels,
+        include_lowest=True,
+        right=True,
+    )
+
+    total = len(scored)
+    rows = []
+    for label in labels:
+        mask = bins == label
+        n = int(mask.sum())
+        if n == 0:
+            acc = float("nan")
+            mean_proba = float("nan")
+            pos_rate = float("nan")
+        else:
+            acc = float((y_pred[mask] == y_true[mask]).mean())
+            mean_proba = float(y_proba[mask].mean())
+            pos_rate = float(y_true[mask].mean())
+        rows.append(
+            {
+                "proba_bin": label,
+                "n": n,
+                "pct": n / max(total, 1),
+                "accuracy": acc,
+                "mean_proba": mean_proba,
+                "good_buy_rate": pos_rate,
+            }
+        )
+
+    report = pd.DataFrame(rows)
+    title = model_label or result.get("model_name", "model")
+    print("\n" + "=" * 72)
+    print(f"Val y_pred_proba bins ({title}, n={total:,})")
+    print("=" * 72)
+    display = report.copy()
+    display["pct"] = display["pct"].map(lambda x: f"{100 * x:.1f}%")
+    for col in ("accuracy", "mean_proba", "good_buy_rate"):
+        display[col] = display[col].map(
+            lambda x: f"{x:.4f}" if pd.notna(x) else "n/a"
+        )
+    print(display.to_string(index=False))
+    return report
+
+
 # =============================================================================
 # MAIN
 # =============================================================================
@@ -753,7 +842,7 @@ def main() -> None:
 
     events = load_bargain_events()
     sec = load_sec_table()
-    feats = load_featurized()
+    feats = load_featurized_sec()
     feats = prep_featurized_features(
         feats,
         quarters_for_gradient_comp=list(QUARTER_GRADIENTS),
@@ -833,6 +922,12 @@ def main() -> None:
     print(
         f"\nBest by ROC-AUC: {best} "
         f"({results[best]['metrics']['roc_auc']:.4f})"
+    )
+    report_val_proba_bins(
+        df_val,
+        results[best],
+        bin_edges=PROBA_BIN_EDGES,
+        model_label=best,
     )
 
 

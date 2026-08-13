@@ -41,3 +41,15 @@ rebound_short_term_days = 10
 
 # Minimum fractional rebound by window end (0.03 = +3%).
 rebound_short_term_per_thresh = 0.03
+
+# =============================================================================
+# MODEL-FILTERED BARGAIN INVESTING (Strategy 3)
+# =============================================================================
+
+# Only invest when baseline good_buy model y_pred_proba exceeds this threshold.
+GOOD_BUY_PROBA_THRESH = 0.75
+
+# Saved scoring bundle from baseline_model.py (RF top-40 by default).
+GOOD_BUY_MODEL_PATH = (
+    PROJECT_ROOT / "derived_data" / "models" / "good_buy_model_rf_top40.pkl"
+)

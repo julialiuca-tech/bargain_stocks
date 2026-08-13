@@ -41,15 +41,24 @@ experiment_trend_down_params.py,"- Parameter experiments for trend-down settings
 
 benchmark_invest.py,"- Backtest bargain vs index strategies since 2000
 - Strategy 1: S&P 500 (point-in-time) bargains; buy next-day open
-- Strategy 2: DIA Dow-proxy on the same Strategy-1 buy dates (open)
+- Strategy 1b: DIA on the same Strategy-1 buy dates (open)
+- Strategy 2: buy DIA every Monday; sell that lot after 3 months
+- Strategy 3: S&P 500 bargains filtered by baseline model y_pred_proba
+- Strategy 3b: DIA on the same Strategy-3 buy dates (open)
 - Fractional shares, no tax
 - Reports cash, holdings, per-trade price_change, and P&L","- python benchmark_invest.py","- derived_data/benchmark_invest/strategy1_bargain_sp500_transactions.csv
-- strategy2_index_transactions.csv
+- strategy1b_index_on_s1_transactions.csv
+- strategy2_dia_monday_transactions.csv
+- strategy3_model_filtered_transactions.csv
+- strategy3b_index_on_s3_transactions.csv
 - benchmark_summary.csv
-- strategy1_vs_2_yearly_returns.png","- config.py
+- strategy1_vs_1b_yearly_returns.png","- config.py
 - trend_down_stocks.py
-- experiment_trend_down_params.py","- INVEST_AMOUNT and HOLD_MONTHS are module constants
+- experiment_trend_down_params.py
+- baseline_model.py","- INVEST_AMOUNT and HOLD_MONTHS are module constants
+- STRATEGY2_HOLD_MONTHS=3 for Monday DIA drip
 - DIA is used as Dow proxy (Stooq US zip has no ^DJI; DIA starts 2005-02-25)
-- Strategies 1–2 are paired 1:1 on tradable signals
+- Strategies 1–1b and 3–3b are paired 1:1 on tradable signals
 - Strategy 1 signals at close, executes at next trading day's open
-- Strategy 1 filters by historical S&P 500 membership on the bargain date"
+- Strategy 1 filters by historical S&P 500 membership on the bargain date
+- Strategy 3 uses config.GOOD_BUY_MODEL_PATH and GOOD_BUY_PROBA_THRESH"
