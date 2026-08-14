@@ -51,5 +51,5 @@ GOOD_BUY_PROBA_THRESH = 0.75
 
 # Saved scoring bundle from baseline_model.py (RF top-40 by default).
 GOOD_BUY_MODEL_PATH = (
-    PROJECT_ROOT / "derived_data" / "models" / "good_buy_model_rf_top40.pkl"
+    PROJECT_ROOT / "derived_data" / "models" / "good_buy_model_xgb_top50.pkl"
 )
